@@ -6,7 +6,6 @@ packages:
   - xz-utils
   - ca-certificates
   - python3
-  - python3-venv
   - unzip
   - libxrender1
   - libxxf86vm1
@@ -30,15 +29,36 @@ write_files:
       VALID_SIZE="${valid_size}"
       BL_VER="${blender_version}"
       FORCE_CPU="${force_cpu}"
+      AWS_REGION="${aws_region}"
 
-      MINIO_ENDPOINT="${minio_endpoint}"
-      MINIO_ACCESS_KEY="${minio_access_key}"
-      MINIO_SECRET_KEY="${minio_secret_key}"
-      MINIO_BUCKET="${minio_bucket}"
-      MINIO_JOB_OBJECT="${minio_job_object}"
-      MINIO_OUT_PREFIX="${minio_output_prefix}"
+      S3_BUCKET="${s3_bucket}"
+      S3_JOB_KEY="${s3_job_key}"
+      S3_OUT_PREFIX="${s3_output_prefix}"
 
-      echo "[info] shard=${shard_id} run=${run_id} blender=${blender_version}"
+      export AWS_REGION
+
+      echo "[info] shard=${shard_id} run=${run_id} blender=${blender_version} region=${aws_region}"
+      echo "[info] s3 input=s3://${s3_bucket}/${s3_job_key}"
+      echo "[info] s3 output=s3://${s3_bucket}/${s3_output_prefix}/${run_id}/shards/shard-XX/"
+
+      # Install AWS CLI v2
+      if ! command -v aws >/dev/null 2>&1; then
+        cd /tmp
+        wget -q https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -O awscliv2.zip
+        unzip -q awscliv2.zip
+        ./aws/install
+      fi
+
+      # Download job bundle from S3
+      mkdir -p /opt/job
+      cd /opt/job
+      aws s3 cp "s3://${S3_BUCKET}/${S3_JOB_KEY}" ./job.zip
+      rm -rf ./job
+      mkdir -p ./job
+      unzip -q ./job.zip -d ./job
+
+      test -f ./job/images.json
+      test -d ./job/assets
 
       # Install Blender (official tarball)
       mkdir -p /opt/blender
@@ -54,51 +74,21 @@ write_files:
       BL_BIN="${BL_DIR}/blender"
       BL_PY="${BL_DIR}/4.2/python/bin/python3.11"
 
-      echo "[info] blender version:"
-      "$BL_BIN" --version | head -n 1
+      echo "[info] blender:"; "$BL_BIN" --version | head -n 1
 
-      # Install MinIO client
-      if [ ! -f /usr/local/bin/mc ]; then
-        wget -q "https://dl.min.io/client/mc/release/linux-amd64/mc" -O /usr/local/bin/mc
-        chmod +x /usr/local/bin/mc
-      fi
-
-      # Configure mc alias
-      mc alias set minio "${MINIO_ENDPOINT}" "${MINIO_ACCESS_KEY}" "${MINIO_SECRET_KEY}"
-
-      # Fetch job zip from MinIO
-      mkdir -p /opt/job
-      cd /opt/job
-      echo "[info] downloading job: s3://${MINIO_BUCKET}/${MINIO_JOB_OBJECT}"
-      mc cp "minio/${MINIO_BUCKET}/${MINIO_JOB_OBJECT}" ./job.zip
-      rm -rf ./job
-      mkdir -p ./job
-      unzip -q ./job.zip -d ./job
-
-      # Validate presence
-      test -f ./job/images.json
-      test -d ./job/assets
-
-      # Install blenderline into Blender Python
+      # Install blenderline into Blender's Python
       "$BL_PY" -m ensurepip >/dev/null || true
       "$BL_PY" -m pip install -U pip >/dev/null
       "$BL_PY" -m pip install -U blenderline >/dev/null
 
-      # Find blenderline executable (Scripts path equivalent on Linux is usually bin/)
-      # Use python to find scripts dir, then locate blenderline entrypoint.
       SCRIPTS_DIR="$("$BL_PY" -c "import sysconfig; print(sysconfig.get_path('scripts'))")"
       BLENDERLINE_EXE="${SCRIPTS_DIR}/blenderline"
-      if [ ! -f "$BLENDERLINE_EXE" ]; then
-        # Fallback: sometimes it lands in /usr/local/bin if pip used sudo (we didn't)
-        BLENDERLINE_EXE="$(command -v blenderline || true)"
-      fi
-      if [ -z "$BLENDERLINE_EXE" ] || [ ! -f "$BLENDERLINE_EXE" ]; then
-        echo "[error] blenderline executable not found"
+      if [ ! -x "$BLENDERLINE_EXE" ]; then
+        echo "[error] blenderline executable not found at $BLENDERLINE_EXE"
         exit 3
       fi
 
-      # Create shard config (unique dataset name + optional seed)
-      # We do it inline using python (system python is fine for json edit).
+      # Build shard config next to assets (IMPORTANT for relative paths)
       python3 - << 'PY'
       import json, os, pathlib
       shard_id = int(os.environ["SHARD_ID"])
@@ -108,12 +98,12 @@ write_files:
       force_cpu = os.environ["FORCE_CPU"].lower() == "true"
 
       job_dir = pathlib.Path("/opt/job/job")
-      base = json.loads((job_dir/"images.json").read_text())
+      base = json.loads((job_dir/"images.json").read_text(encoding="utf-8"))
+
       base.setdefault("dataset", {})
       base["dataset"]["name"] = f"{base['dataset'].get('name','dataset')}_{run_id}_shard_{shard_id:02d}"
       base["dataset"]["seed"] = 1000 + shard_id
 
-      # Override split sizes if present
       splits = base["dataset"].get("splits", [])
       for sp in splits:
         if sp.get("name") == "train":
@@ -122,23 +112,20 @@ write_files:
           sp["size"] = valid
       base["dataset"]["splits"] = splits
 
-      # Optionally force CPU
       if force_cpu and "scene" in base and isinstance(base["scene"], dict):
         base["scene"]["render_use_cuda"] = False
 
-      (job_dir/"images_shard.json").write_text(json.dumps(base, indent=2))
+      (job_dir/"images_shard.json").write_text(json.dumps(base, indent=2), encoding="utf-8")
       print("wrote", job_dir/"images_shard.json")
       PY
 
-      # Render locally
       OUT_LOCAL="/mnt/render/${RUN_ID}/shard-$(printf "%02d" "${SHARD_ID}")"
       mkdir -p "$OUT_LOCAL"
+
       "$BLENDERLINE_EXE" generate --config /opt/job/job/images_shard.json --target "$OUT_LOCAL" --blender "$BL_DIR"
 
-      # Upload to MinIO
-      OUT_REMOTE="minio/${MINIO_BUCKET}/${MINIO_OUT_PREFIX}/${RUN_ID}/shards/shard-$(printf "%02d" "${SHARD_ID}")"
-      mc mirror --overwrite "$OUT_LOCAL" "$OUT_REMOTE"
-      echo "[done] uploaded to $OUT_REMOTE"
+      aws s3 sync "$OUT_LOCAL" "s3://${S3_BUCKET}/${S3_OUT_PREFIX}/${RUN_ID}/shards/shard-$(printf "%02d" "${SHARD_ID}")"
+      echo "[done] uploaded to s3://${S3_BUCKET}/${S3_OUT_PREFIX}/${RUN_ID}/shards/shard-$(printf "%02d" "${SHARD_ID}")"
 
 runcmd:
   - [ bash, -lc, "/opt/blenderline/run_shard.sh > /var/log/blenderline_shard.log 2>&1" ]

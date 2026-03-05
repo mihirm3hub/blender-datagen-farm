@@ -1,7 +1,3 @@
-provider "aws" {
-  region = var.aws_region
-}
-
 resource "aws_instance" "render_node" {
   count = var.num_nodes
 
@@ -11,20 +7,19 @@ resource "aws_instance" "render_node" {
   vpc_security_group_ids = [var.security_group_id]
   key_name               = var.key_name
 
+  iam_instance_profile = aws_iam_instance_profile.render_profile.name
+
   user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
-    shard_id            = count.index + 1
-    num_nodes           = var.num_nodes
-    run_id              = var.run_id
-    train_size          = var.train_size
-    valid_size          = var.valid_size
-    blender_version     = var.blender_version
-    minio_endpoint      = var.minio_endpoint
-    minio_access_key    = var.minio_access_key
-    minio_secret_key    = var.minio_secret_key
-    minio_bucket        = var.minio_bucket
-    minio_job_object    = var.minio_job_object
-    minio_output_prefix = var.minio_output_prefix
-    force_cpu           = var.force_cpu
+    shard_id         = count.index + 1
+    run_id           = var.run_id
+    train_size       = var.train_size
+    valid_size       = var.valid_size
+    blender_version  = var.blender_version
+    s3_bucket        = var.s3_bucket
+    s3_job_key       = var.s3_job_key
+    s3_output_prefix = var.s3_output_prefix
+    aws_region       = var.aws_region
+    force_cpu        = var.force_cpu
   })
 
   tags = {
