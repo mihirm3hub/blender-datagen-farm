@@ -1,0 +1,121 @@
+name: renderfarm
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run ID (used in output prefix)"
+        required: true
+        type: string
+      num_nodes:
+        description: "Number of render nodes"
+        required: true
+        default: "5"
+        type: string
+      train_size:
+        description: "Train split size per node"
+        required: true
+        default: "100"
+        type: string
+      valid_size:
+        description: "Valid split size per node"
+        required: true
+        default: "20"
+        type: string
+      minio_endpoint:
+        description: "MinIO endpoint URL (e.g., http://10.0.0.10:9000)"
+        required: true
+        type: string
+      minio_bucket:
+        description: "MinIO bucket"
+        required: true
+        default: "synthetic-datasets"
+        type: string
+      minio_job_object:
+        description: "Object key for job zip (e.g., jobs/example_beer_job.zip)"
+        required: true
+        type: string
+      minio_output_prefix:
+        description: "Output prefix (e.g., runs)"
+        required: true
+        default: "runs"
+        type: string
+      aws_region:
+        description: "AWS region"
+        required: true
+        default: "us-east-1"
+        type: string
+      aws_ami_id:
+        description: "Ubuntu 22.04 AMI ID (x86_64)"
+        required: true
+        type: string
+      aws_subnet_id:
+        description: "Subnet ID"
+        required: true
+        type: string
+      aws_security_group_id:
+        description: "Security group ID"
+        required: true
+        type: string
+      aws_key_name:
+        description: "EC2 keypair name"
+        required: true
+        type: string
+      aws_instance_type:
+        description: "Instance type (e.g., g5.xlarge)"
+        required: true
+        default: "g5.xlarge"
+        type: string
+      force_cpu:
+        description: "Force CPU rendering (sets render_use_cuda=false)"
+        required: true
+        default: "false"
+        type: string
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TF_IN_AUTOMATION: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: infra/terraform
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: infra/terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        run: |
+          terraform apply -auto-approve \
+            -var="aws_region=${{ inputs.aws_region }}" \
+            -var="ami_id=${{ inputs.aws_ami_id }}" \
+            -var="subnet_id=${{ inputs.aws_subnet_id }}" \
+            -var="security_group_id=${{ inputs.aws_security_group_id }}" \
+            -var="key_name=${{ inputs.aws_key_name }}" \
+            -var="num_nodes=${{ inputs.num_nodes }}" \
+            -var="instance_type=${{ inputs.aws_instance_type }}" \
+            -var="run_id=${{ inputs.run_id }}" \
+            -var="train_size=${{ inputs.train_size }}" \
+            -var="valid_size=${{ inputs.valid_size }}" \
+            -var="minio_endpoint=${{ inputs.minio_endpoint }}" \
+            -var="minio_bucket=${{ inputs.minio_bucket }}" \
+            -var="minio_job_object=${{ inputs.minio_job_object }}" \
+            -var="minio_output_prefix=${{ inputs.minio_output_prefix }}" \
+            -var="minio_access_key=${{ secrets.MINIO_ACCESS_KEY }}" \
+            -var="minio_secret_key=${{ secrets.MINIO_SECRET_KEY }}" \
+            -var="force_cpu=${{ inputs.force_cpu }}"
+
+      - name: Output IPs
+        working-directory: infra/terraform
+        run: terraform output -json

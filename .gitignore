@@ -1,0 +1,16 @@
+# data outputs
+data_local/
+data/
+*.zip
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# terraform
+infra/terraform/.terraform/
+infra/terraform/.terraform.lock.hcl
+infra/terraform/terraform.tfstate*

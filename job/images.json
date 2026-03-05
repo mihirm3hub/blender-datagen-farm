@@ -1,0 +1,94 @@
+{
+  "dataset": {
+    "name": "example_beer",
+    "seed": 42,
+    "splits": [
+      {
+        "name": "train",
+        "size": 2
+      },
+      {
+        "name": "valid",
+        "size": 2
+      }
+    ]
+  },
+  "scene": {
+    "path": "assets/scenes/scene-001.blend",
+    "camera_object_name": "camera",
+    "render_samples": 256,
+    "render_use_cuda": true,
+    "render_denoising": true,
+    "render_resolution": [
+      512,
+      512
+    ]
+  },
+  "hdrs": {
+    "entries": [
+      {
+        "path": "assets/hdrs/factory-interior-001.exr",
+        "relative_frequency": 1
+      },
+      {
+        "path": "assets/hdrs/field-exterior-001.hdr",
+        "relative_frequency": 10
+      }
+    ]
+  },
+  "backgrounds": {
+    "background_object_name": "background",
+    "entries": [
+      {
+        "path": "assets/backgrounds/factory-001.png",
+        "relative_frequency": 1
+      },
+      {
+        "path": "assets/backgrounds/factory-002.png",
+        "relative_frequency": 1
+      },
+      {
+        "path": "assets/backgrounds/factory-003.png",
+        "relative_frequency": 1
+      },
+      {
+        "path": "assets/backgrounds/factory-004.png",
+        "relative_frequency": 1
+      },
+      {
+        "path": "assets/backgrounds/factory-005.png",
+        "relative_frequency": 1
+      },
+      {
+        "path": "assets/backgrounds/factory-006.png",
+        "relative_frequency": 1
+      }
+    ]
+  },
+  "items": {
+    "path_object_name": "path",
+    "spawn_probability": 0.9,
+    "max_tries": 10,
+    "max_items": 10,
+    "entries": [
+      {
+        "path": "assets/items/heineken-001.blend",
+        "label": 0,
+        "label_name": "green bottle",
+        "object_name": "heineken",
+        "relative_frequency": 1,
+        "min_margin_distance": 0.06,
+        "max_lateral_distance": 0
+      },
+      {
+        "path": "assets/items/hertog-jan-001.blend",
+        "label": 1,
+        "label_name": "brown bottle",
+        "object_name": "hertog-jan",
+        "relative_frequency": 1,
+        "min_margin_distance": 0.06,
+        "max_lateral_distance": 0
+      }
+    ]
+  }
+}

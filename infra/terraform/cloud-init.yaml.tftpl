@@ -1,0 +1,144 @@
+#cloud-config
+package_update: true
+packages:
+  - wget
+  - tar
+  - xz-utils
+  - ca-certificates
+  - python3
+  - python3-venv
+  - unzip
+  - libxrender1
+  - libxxf86vm1
+  - libxfixes3
+  - libxi6
+  - libxkbcommon0
+  - libsm6
+  - libxext6
+  - libgl1
+
+write_files:
+  - path: /opt/blenderline/run_shard.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      SHARD_ID="${shard_id}"
+      RUN_ID="${run_id}"
+      TRAIN_SIZE="${train_size}"
+      VALID_SIZE="${valid_size}"
+      BL_VER="${blender_version}"
+      FORCE_CPU="${force_cpu}"
+
+      MINIO_ENDPOINT="${minio_endpoint}"
+      MINIO_ACCESS_KEY="${minio_access_key}"
+      MINIO_SECRET_KEY="${minio_secret_key}"
+      MINIO_BUCKET="${minio_bucket}"
+      MINIO_JOB_OBJECT="${minio_job_object}"
+      MINIO_OUT_PREFIX="${minio_output_prefix}"
+
+      echo "[info] shard=${shard_id} run=${run_id} blender=${blender_version}"
+
+      # Install Blender (official tarball)
+      mkdir -p /opt/blender
+      cd /opt/blender
+      BL_TAR="blender-${BL_VER}-linux-x64.tar.xz"
+      if [ ! -f "$BL_TAR" ]; then
+        wget -q "https://download.blender.org/release/Blender4.2/${BL_TAR}" -O "$BL_TAR"
+      fi
+      if [ ! -d "/opt/blender/blender-${BL_VER}-linux-x64" ]; then
+        tar -xf "$BL_TAR"
+      fi
+      BL_DIR="/opt/blender/blender-${BL_VER}-linux-x64"
+      BL_BIN="${BL_DIR}/blender"
+      BL_PY="${BL_DIR}/4.2/python/bin/python3.11"
+
+      echo "[info] blender version:"
+      "$BL_BIN" --version | head -n 1
+
+      # Install MinIO client
+      if [ ! -f /usr/local/bin/mc ]; then
+        wget -q "https://dl.min.io/client/mc/release/linux-amd64/mc" -O /usr/local/bin/mc
+        chmod +x /usr/local/bin/mc
+      fi
+
+      # Configure mc alias
+      mc alias set minio "${MINIO_ENDPOINT}" "${MINIO_ACCESS_KEY}" "${MINIO_SECRET_KEY}"
+
+      # Fetch job zip from MinIO
+      mkdir -p /opt/job
+      cd /opt/job
+      echo "[info] downloading job: s3://${MINIO_BUCKET}/${MINIO_JOB_OBJECT}"
+      mc cp "minio/${MINIO_BUCKET}/${MINIO_JOB_OBJECT}" ./job.zip
+      rm -rf ./job
+      mkdir -p ./job
+      unzip -q ./job.zip -d ./job
+
+      # Validate presence
+      test -f ./job/images.json
+      test -d ./job/assets
+
+      # Install blenderline into Blender Python
+      "$BL_PY" -m ensurepip >/dev/null || true
+      "$BL_PY" -m pip install -U pip >/dev/null
+      "$BL_PY" -m pip install -U blenderline >/dev/null
+
+      # Find blenderline executable (Scripts path equivalent on Linux is usually bin/)
+      # Use python to find scripts dir, then locate blenderline entrypoint.
+      SCRIPTS_DIR="$("$BL_PY" -c "import sysconfig; print(sysconfig.get_path('scripts'))")"
+      BLENDERLINE_EXE="${SCRIPTS_DIR}/blenderline"
+      if [ ! -f "$BLENDERLINE_EXE" ]; then
+        # Fallback: sometimes it lands in /usr/local/bin if pip used sudo (we didn't)
+        BLENDERLINE_EXE="$(command -v blenderline || true)"
+      fi
+      if [ -z "$BLENDERLINE_EXE" ] || [ ! -f "$BLENDERLINE_EXE" ]; then
+        echo "[error] blenderline executable not found"
+        exit 3
+      fi
+
+      # Create shard config (unique dataset name + optional seed)
+      # We do it inline using python (system python is fine for json edit).
+      python3 - << 'PY'
+      import json, os, pathlib
+      shard_id = int(os.environ["SHARD_ID"])
+      run_id = os.environ["RUN_ID"]
+      train = int(os.environ["TRAIN_SIZE"])
+      valid = int(os.environ["VALID_SIZE"])
+      force_cpu = os.environ["FORCE_CPU"].lower() == "true"
+
+      job_dir = pathlib.Path("/opt/job/job")
+      base = json.loads((job_dir/"images.json").read_text())
+      base.setdefault("dataset", {})
+      base["dataset"]["name"] = f"{base['dataset'].get('name','dataset')}_{run_id}_shard_{shard_id:02d}"
+      base["dataset"]["seed"] = 1000 + shard_id
+
+      # Override split sizes if present
+      splits = base["dataset"].get("splits", [])
+      for sp in splits:
+        if sp.get("name") == "train":
+          sp["size"] = train
+        if sp.get("name") == "valid":
+          sp["size"] = valid
+      base["dataset"]["splits"] = splits
+
+      # Optionally force CPU
+      if force_cpu and "scene" in base and isinstance(base["scene"], dict):
+        base["scene"]["render_use_cuda"] = False
+
+      (job_dir/"images_shard.json").write_text(json.dumps(base, indent=2))
+      print("wrote", job_dir/"images_shard.json")
+      PY
+
+      # Render locally
+      OUT_LOCAL="/mnt/render/${RUN_ID}/shard-$(printf "%02d" "${SHARD_ID}")"
+      mkdir -p "$OUT_LOCAL"
+      "$BLENDERLINE_EXE" generate --config /opt/job/job/images_shard.json --target "$OUT_LOCAL" --blender "$BL_DIR"
+
+      # Upload to MinIO
+      OUT_REMOTE="minio/${MINIO_BUCKET}/${MINIO_OUT_PREFIX}/${RUN_ID}/shards/shard-$(printf "%02d" "${SHARD_ID}")"
+      mc mirror --overwrite "$OUT_LOCAL" "$OUT_REMOTE"
+      echo "[done] uploaded to $OUT_REMOTE"
+
+runcmd:
+  - [ bash, -lc, "/opt/blenderline/run_shard.sh > /var/log/blenderline_shard.log 2>&1" ]
